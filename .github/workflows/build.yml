@@ -1,0 +1,64 @@
+name: Build kernel
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout main kernel
+        uses: actions/checkout@v4
+        with:
+          path: main_kernel
+          submodules: 'recursive'
+          
+      - name: Checkout sm8650-modules
+        uses: actions/checkout@v4
+        with:
+          repository: oplus-8650-clo/android_kernel_oneplus_sm8650-modules
+          ref: calcite
+          path: sm8650-modules
+          
+      - name: Checkout devicetrees
+        uses: actions/checkout@v4
+        with:
+          repository: oplus-8650-clo/android_kernel_oneplus_sm8650-devicetrees
+          ref: calcite
+          path: sm8650-devicetrees
+
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+
+      - name: Install tools
+        run: |
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt || true
+          for i in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=5 && \
+            sudo apt-get install -y --fix-missing -o Acquire::Retries=5 \
+              clang lld llvm bc bison flex libssl-dev libelf-dev lz4 cpio zstd python3 gcc-aarch64-linux-gnu && break
+            echo "Attempt $i failed, retrying..."; sleep 15
+          done
+
+      - name: Merge Repositories (The Frankenstein Step)
+        run: |
+          echo "Injecting Oplus modules into main kernel tree..."
+          cp -r sm8650-modules/* main_kernel/ || true
+          echo "Injecting devicetrees into main kernel tree..."
+          cp -r sm8650-devicetrees/* main_kernel/ || true
+          echo "Merge complete."
+
+      - name: Configure
+        run: |
+          cd main_kernel
+          make O=out ARCH=arm64 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            gki_defconfig vendor/pineapple_GKI.config vendor/oplus/pineapple_GKI.config
+          grep -E "CONFIG_PID_NS|CONFIG_USER_NS" out/.config
+
+      - name: Build
+        run: |
+          cd main_kernel
+          make -j$(nproc) O=out ARCH=arm64 LLVM=1 CROSS_COMPILE=aarch64-linux-gnu- Image
+          cat out/include/config/kernel.release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: main_kernel/out/arch/arm64/boot/Image
